@@ -12,7 +12,7 @@ const CAP=[6,6,6,6,6,6],MAX_ROUND=5;
 const newTeam=i=>({id:i+1,capacity:CAP[i],players:[],assignments:{}});
 let state={round:0,phase:'lobby',version:1,mode:'normal',teams:CAP.map((_,i)=>newTeam(i)),words:DEFAULT_WORDS.map(r=>r.slice()),wordsVersion:1};
 const DATA_FILE=process.env.DATA_FILE||path.join(__dirname,'.game-state.json');
-try{const saved=JSON.parse(fs.readFileSync(DATA_FILE,'utf8'));if(saved&&saved.teams?.length===6&&saved.words?.length===5)state=saved;}catch{}
+try{const saved=JSON.parse(fs.readFileSync(DATA_FILE,'utf8'));if(saved&&saved.teams?.length===6&&saved.words?.length===5){state=saved;state.teams.forEach((t,i)=>t.capacity=CAP[i]);}}catch{}
 function save(){try{const f=DATA_FILE+'.tmp';fs.writeFileSync(f,JSON.stringify(state));fs.renameSync(f,DATA_FILE);}catch(e){console.error('Persistence (ephemeral on Render free):',e.message);}}
 const rand=()=>crypto.randomBytes(24).toString('hex');
 const randomInt=n=>crypto.randomInt(n);
@@ -23,12 +23,12 @@ function send(res,status,payload){res.writeHead(status,{'Content-Type':'applicat
 function parse(req){return new Promise((resolve,reject)=>{let b='',aborted=false;req.on('data',x=>{b+=x;if(b.length>24000&&!aborted){aborted=true;reject(new Error('Too large'));req.destroy();}});req.on('end',()=>{if(aborted)return;try{resolve(JSON.parse(b||'{}'));}catch{reject(new Error('Invalid JSON'));}});req.on('error',reject);});}
 function shuffle(a){a=a.slice();for(let i=a.length-1;i>0;i--){const j=randomInt(i+1);[a[i],a[j]]=[a[j],a[i]];}return a;}
 function getPlayer(token){if(typeof token!=='string'||token.length!==48)return null;for(const team of state.teams){const p=team.players.find(x=>x.token===token);if(p)return {team,p};}return null;}
-function pupilStatus(v){const {team,p}=v;const ret={phase:state.phase,round:state.round,team:team.id,capacity:team.capacity,ready:team.players.length,players:team.players.map(x=>({name:x.name,isMe:x.token===p.token})),me:p.name,version:state.version};if(state.phase==='playing'){const r=team.assignments[p.token];if(r)ret.card={role:r.role,potato:r.potato,word:r.role==='시민'?state.words[state.round-1][team.id-1]:null};}return ret;}
-function hostStatus(showCards=false){return {round:state.round,phase:state.phase,mode:state.mode,version:state.version,wordsVersion:state.wordsVersion,teams:state.teams.map(t=>({id:t.id,capacity:t.capacity,ready:t.players.length,names:t.players.map(x=>x.name), ...(showCards&&state.mode==='test'?{testCards:Object.values(t.assignments).map(a=>({name:a.name,role:a.role,potato:a.potato,word:a.role==='시민'?state.words[state.round-1][t.id-1]:null}))}:{})})),words:state.words.map(r=>r.slice()),warning:process.env.ADMIN_PIN?'':'기본 관리자 암호 2468 사용 중. 실제 수업 전 Render에서 ADMIN_PIN을 변경하세요.'};}
+function pupilStatus(v){const {team,p}=v;const ret={phase:state.phase,round:state.round,team:team.id,capacity:team.capacity,ready:team.players.length,players:team.players.map(x=>({name:x.name,isMe:x.token===p.token})),me:p.name,version:state.version};if(state.phase==='playing'){const r=team.assignments[p.token];if(r)ret.card={role:r.role,potato:r.potato,word:r.role==='시민'?state.words[state.round-1][team.id-1]:null};else ret.inactive=true;}return ret;}
+function hostStatus(showCards=false){return {round:state.round,phase:state.phase,mode:state.mode,version:state.version,wordsVersion:state.wordsVersion,teams:state.teams.map(t=>({id:t.id,capacity:t.capacity,ready:t.players.length,names:t.players.map(x=>x.name),active:state.phase==='playing'&&Object.keys(t.assignments).length>0, ...(showCards&&state.mode==='test'?{testCards:Object.values(t.assignments).map(a=>({name:a.name,role:a.role,potato:a.potato,word:a.role==='시민'?state.words[state.round-1][t.id-1]:null}))}:{})})),words:state.words.map(r=>r.slice()),warning:process.env.ADMIN_PIN?'':'기본 관리자 암호 2468 사용 중. 실제 수업 전 Render에서 ADMIN_PIN을 변경하세요.'};}
 const validWords=w=>Array.isArray(w)&&w.length===5&&w.every(r=>Array.isArray(r)&&r.length===6&&r.every(v=>typeof v==='string'&&v.trim().length>0&&v.trim().length<=40));
 async function api(req,res,u){
  try{
-  if(req.method==='GET'&&u.pathname==='/api/health')return send(res,200,{ok:true,version:'2.0.0'});
+  if(req.method==='GET'&&u.pathname==='/api/health')return send(res,200,{ok:true,version:'2.1.0'});
   if(req.method==='GET'&&u.pathname==='/api/status'){const v=getPlayer(u.searchParams.get('token'));return v?send(res,200,pupilStatus(v)):fail(res,'입장 정보가 만료되었어요. 다시 입장해 주세요.',401);}
   if(req.method!=='POST')return fail(res,'지원하지 않는 요청입니다.',405);
   const b=await parse(req);
@@ -61,11 +61,13 @@ async function api(req,res,u){
   }
   if(action==='start'){
    if(state.phase!=='lobby')return fail(res,'이미 시작했거나 종료된 게임이에요.');
-   const missing=state.teams.filter(t=>t.players.length<(state.mode==='test'?1:3));
-   if(missing.length)return fail(res,`${missing.map(t=>t.id+'조').join(', ')}에 참가자가 부족해요. ${state.mode==='test'?'테스트는 조별 1명':'일반 게임은 조별 최소 3명'}이 필요해요.`);
+   const minPlayers=state.mode==='test'?1:3;
+   const active=state.teams.filter(t=>t.players.length>=minPlayers);
+   if(!active.length)return fail(res,`시작할 수 있는 조가 없어요. ${state.mode==='test'?'테스트는 한 조에 1명':'일반 수업은 한 조에 최소 3명'}이 필요해요.`);
    if(state.round>=MAX_ROUND)return fail(res,'5판을 마쳤어요. 전체 초기화를 이용하세요.');
    state.round++;
    for(const team of state.teams){
+    if(team.players.length<(state.mode==='test'?1:3)){team.assignments={};continue;}
     const slots=team.players.map(p=>({token:p.token,name:p.name}));
     if(state.mode==='test')for(let i=slots.length;i<team.capacity;i++)slots.push({token:`virtual-${team.id}-${i}`,name:`가상 학생 ${i+1}`});
     const ids=shuffle(slots.map(x=>x.token));const liar=ids[0],potato=ids[randomInt(ids.length)];
@@ -78,6 +80,7 @@ async function api(req,res,u){
    if(state.round===MAX_ROUND){state.phase='complete';state.teams.forEach(t=>t.assignments={});state.version++;save();return send(res,200,hostStatus());}
    state.round++;
    for(const team of state.teams){
+    if(team.players.length<(state.mode==='test'?1:3)){team.assignments={};continue;}
     const slots=team.players.map(p=>({token:p.token,name:p.name}));
     if(state.mode==='test')for(let i=slots.length;i<team.capacity;i++)slots.push({token:`virtual-${team.id}-${i}`,name:`가상 학생 ${i+1}`});
     const ids=shuffle(slots.map(x=>x.token)),liar=ids[0],potato=ids[randomInt(ids.length)];
