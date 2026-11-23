@@ -8,7 +8,7 @@ const DEFAULT_WORDS=[
 ['피자','편의점','강아지','냉장고','노래방','방학'],
 ['아이스크림','공항','모기','에어컨','여행','숙제'],
 ['치킨','놀이공원','원숭이','자전거','게임','콘서트'] ];
-const CAP=[5,5,5,5,5,6],MAX_ROUND=5;
+const CAP=[6,6,6,6,6,6],MAX_ROUND=5;
 const newTeam=i=>({id:i+1,capacity:CAP[i],players:[],assignments:{}});
 let state={round:0,phase:'lobby',version:1,mode:'normal',teams:CAP.map((_,i)=>newTeam(i)),words:DEFAULT_WORDS.map(r=>r.slice()),wordsVersion:1};
 const DATA_FILE=process.env.DATA_FILE||path.join(__dirname,'.game-state.json');
